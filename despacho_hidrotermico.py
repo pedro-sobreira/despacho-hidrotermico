@@ -1,12 +1,12 @@
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize, LinearConstraint, Bounds
+from scipy.optimize import minimize
 from datetime import datetime
 
 def otimizacao_despacho_anual_com_afluencias():
     """
     Programa de otimização para despacho hidrotérmico de duas usinas ao longo de 12 meses:
-    1. Usina Hidrelétrica (UH) - Custo marginal zero, limitada por afluência
+    1. Usina Hidrelétrica (UH) - Custo marginal zero, limitada por água disponível
     2. Usina Termoelétrica (UT) - Custo linear
     Conectadas a uma carga através de uma linha de transmissão.
     
@@ -91,14 +91,20 @@ def otimizacao_despacho_anual_com_afluencias():
         print(f"  Afluência: {afluencia} MWh")
         print(f"  Volume do Reservatório no Início: {volume_atual:.1f} MWh ({volume_atual/capacidade_reservatorio*100:.1f}%)")
         
-        # Energia disponível = Afluência + Volume armazenado, limitada pelo volume máximo
-        energia_disponivel = min(afluencia + volume_atual, volume_max * capacidade_reservatorio / 100)
-        
         horas_mes = 720
-        p_hidro_max_disponivel = min(p_hidro_max, energia_disponivel / horas_mes)
+        
+        # Água disponível para geração = Afluência + Volume armazenado
+        agua_disponivel = afluencia + volume_atual
+        
+        # Limite máximo de geração hidro baseado na água disponível
+        # A água disponível em MWh pode ser convertida em potência média
+        # Mas como a usina pode variar sua potência ao longo do mês, 
+        # o limite é apenas a capacidade máxima da usina
+        # A restrição de água será aplicada no balanço hídrico
+        p_hidro_max_bound = p_hidro_max
         
         def objetivo(x):
-            """Minimizar custo da termoelétrica"""
+            """Minimizar custo da termoelétrica (equivalente a maximizar hidro)"""
             p_hidro, p_termo = x[0], x[1]
             return p_termo * custo_termo
 
@@ -106,21 +112,19 @@ def otimizacao_despacho_anual_com_afluencias():
             """Restrição: Geração = Demanda + Perdas"""
             p_hidro, p_termo = x[0], x[1]
             perdas = coef_perda * (p_hidro + p_termo)**2
-            # Retorna zero quando a restrição é satisfeita
             return (p_hidro + p_termo) - demanda - perdas
 
         def restricao_transmissao(x):
             """Restrição: Geração ≤ Limite de transmissão"""
             return limite_transmissao - (x[0] + x[1])
 
-        # Condições iniciais
-        p_hidro_inicial = min(p_hidro_max_disponivel, demanda * 0.6)
-        p_termo_inicial = max(p_termo_min, demanda * 0.4)
+        # Condições iniciais - tentar maximizar hidro
+        p_hidro_inicial = min(p_hidro_max_bound, demanda * 0.8)
+        p_termo_inicial = max(p_termo_min, demanda * 0.2)
         x0 = np.array([p_hidro_inicial, p_termo_inicial])
         
         # Bounds
-        p_hidro_max_bound = max(p_hidro_min, p_hidro_max_disponivel)
-        bounds = Bounds([p_hidro_min, p_termo_min], [p_hidro_max_bound, p_termo_max])
+        bounds = [(p_hidro_min, p_hidro_max_bound), (p_termo_min, p_termo_max)]
         
         # Restrições
         cons = [
@@ -145,7 +149,10 @@ def otimizacao_despacho_anual_com_afluencias():
             energia_hidro_mes = p_hidro_otimo * horas_mes
             
             # Balanço hídrico
+            # Volume novo = Volume anterior + Afluência - Energia utilizada
             volume_novo = volume_atual + afluencia - energia_hidro_mes
+            
+            # Aplicar restrições de volume
             volume_novo = max(volume_min * capacidade_reservatorio / 100,
                             min(volume_max * capacidade_reservatorio / 100, volume_novo))
             
@@ -156,6 +163,7 @@ def otimizacao_despacho_anual_com_afluencias():
             print(f"  Perdas na Transmissão: {perdas:7.2f} MW")
             print(f"  Eficiência de Transmissão: {eficiencia:6.2f}%")
             print(f"  Energia Hidro Utilizada: {energia_hidro_mes:7.1f} MWh")
+            print(f"  Água Disponível: {agua_disponivel:7.1f} MWh")
             print(f"  Custo Total de Operação: ${custo_total:10.2f}")
             print(f"  Volume do Reservatório no Final: {volume_novo:.1f} MWh ({volume_novo/capacidade_reservatorio*100:.1f}%)")
             print()
@@ -165,6 +173,7 @@ def otimizacao_despacho_anual_com_afluencias():
                 'Mês': mes,
                 'Demanda (MW)': demanda,
                 'Afluência (MWh)': afluencia,
+                'Água Disponível (MWh)': agua_disponivel,
                 'P_Hidro (MW)': p_hidro_otimo,
                 'P_Termo (MW)': p_termo_otimo,
                 'Geração Total (MW)': geracao_total,
